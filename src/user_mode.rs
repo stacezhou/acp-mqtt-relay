@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -37,6 +38,9 @@ pub async fn run(config: UserConfig) -> Result<()> {
     let mut stdin_closed = false;
     let mut idle_since: Option<Instant> = None;
 
+    let mut next_expected_seq = 1_u64;
+    let mut message_buffer: BTreeMap<u64, AcpMessage> = BTreeMap::new();
+
     loop {
         let deadline = idle_since.map(|started| {
             let elapsed = started.elapsed();
@@ -53,8 +57,23 @@ pub async fn run(config: UserConfig) -> Result<()> {
             maybe_message = mqtt_rx.recv() => {
                 match maybe_message {
                     Some(MqttIncomingMessage::Publish { topic, payload }) => {
-                        tracing::debug!(topic = %topic, "forwarding MQTT payload to stdout");
-                        write_incoming_payload(&payload).await?;
+                        tracing::debug!(topic = %topic, "received MQTT payload");
+                        let message = AcpMessage::from_slice(&payload)?;
+                        
+                        if message.seq < next_expected_seq {
+                            tracing::warn!(seq = message.seq, "ignoring duplicate message");
+                            continue;
+                        }
+
+                        message_buffer.insert(message.seq, message);
+
+                        // Process all contiguous messages starting from next_expected_seq
+                        while let Some(msg) = message_buffer.remove(&next_expected_seq) {
+                            tracing::debug!(seq = msg.seq, "processing message in order");
+                            write_message_to_output(&msg).await?;
+                            next_expected_seq += 1;
+                        }
+
                         if stdin_closed {
                             idle_since = Some(Instant::now());
                         }
@@ -88,6 +107,7 @@ pub async fn run(config: UserConfig) -> Result<()> {
 async fn forward_stdin_to_mqtt(relay: &MqttRelayClient) -> Result<()> {
     let mut stdin = io::stdin();
     let mut buffer = [0_u8; 4096];
+    let mut seq = 1_u64;
 
     loop {
         let bytes_read = stdin
@@ -100,16 +120,16 @@ async fn forward_stdin_to_mqtt(relay: &MqttRelayClient) -> Result<()> {
             break;
         }
 
-        tracing::info!(bytes_read, "captured stdin bytes");
-        let payload = AcpMessage::new(StreamType::Stdin, &buffer[..bytes_read]).to_json_line()?;
+        tracing::info!(bytes_read, seq, "captured stdin bytes");
+        let payload = AcpMessage::new(seq, StreamType::Stdin, &buffer[..bytes_read]).to_json_line()?;
         relay.publish(relay.publish_topic(), payload).await?;
+        seq += 1;
     }
 
     Ok(())
 }
 
-async fn write_incoming_payload(payload: &[u8]) -> Result<()> {
-    let message = AcpMessage::from_slice(payload)?;
+async fn write_message_to_output(message: &AcpMessage) -> Result<()> {
     let bytes = message.decode_bytes()?;
 
     match message.stream {

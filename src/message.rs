@@ -12,6 +12,7 @@ pub enum StreamType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AcpMessage {
+    pub seq: u64,
     #[serde(rename = "type")]
     pub stream: StreamType,
     pub content: String,
@@ -24,8 +25,9 @@ fn default_encoding() -> String {
 }
 
 impl AcpMessage {
-    pub fn new(stream: StreamType, bytes: &[u8]) -> Self {
+    pub fn new(seq: u64, stream: StreamType, bytes: &[u8]) -> Self {
         Self {
+            seq,
             stream,
             content: STANDARD.encode(bytes),
             encoding: default_encoding(),
@@ -58,9 +60,10 @@ mod tests {
 
     #[test]
     fn round_trip_json() {
-        let message = AcpMessage::new(StreamType::Stdout, b"hello");
+        let message = AcpMessage::new(1, StreamType::Stdout, b"hello");
         let encoded = message.to_json_line().expect("json encoding");
         let decoded = AcpMessage::from_slice(encoded.trim_ascii_end()).expect("json decoding");
+        assert_eq!(decoded.seq, 1);
         assert_eq!(decoded.stream, StreamType::Stdout);
         assert_eq!(decoded.decode_bytes().expect("base64 decode"), b"hello");
     }

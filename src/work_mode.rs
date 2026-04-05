@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{ChildStdin, Command};
@@ -29,26 +32,45 @@ pub async fn run(config: WorkConfig) -> Result<()> {
     });
 
     let stdin_task = tokio::spawn(async move {
+        let mut next_expected_seq = 1_u64;
+        let mut message_buffer: BTreeMap<u64, AcpMessage> = BTreeMap::new();
+
         while let Some(message) = mqtt_rx.recv().await {
             match message {
                 MqttIncomingMessage::Publish { topic, payload } => {
-                    tracing::debug!(topic = %topic, "forwarding MQTT payload to child stdin");
-                    write_to_child_stdin(&mut child_stdin, &payload).await?;
+                    tracing::debug!(topic = %topic, "received MQTT payload for child stdin");
+                    let msg = AcpMessage::from_slice(&payload)?;
+
+                    if msg.seq < next_expected_seq {
+                        tracing::warn!(seq = msg.seq, "ignoring duplicate stdin message");
+                        continue;
+                    }
+
+                    message_buffer.insert(msg.seq, msg);
+
+                    while let Some(ordered_msg) = message_buffer.remove(&next_expected_seq) {
+                        write_message_to_child_stdin(&mut child_stdin, &ordered_msg).await?;
+                        next_expected_seq += 1;
+                    }
                 }
             }
         }
         Ok::<(), anyhow::Error>(())
     });
 
+    let out_seq = Arc::new(AtomicU64::new(1));
+
     let stdout_task = tokio::spawn(stream_child_output(
         relay.clone(),
         child_stdout,
         StreamType::Stdout,
+        out_seq.clone(),
     ));
     let stderr_task = tokio::spawn(stream_child_output(
         relay.clone(),
         child_stderr,
         StreamType::Stderr,
+        out_seq.clone(),
     ));
     let monitor_task = tokio::spawn(async move {
         let status = child.wait().await.context("failed to wait for child")?;
@@ -98,8 +120,7 @@ fn spawn_command(command: &str) -> Result<tokio::process::Child> {
         .with_context(|| format!("failed to spawn child command: {command}"))
 }
 
-async fn write_to_child_stdin(stdin: &mut ChildStdin, payload: &[u8]) -> Result<()> {
-    let message = AcpMessage::from_slice(payload)?;
+async fn write_message_to_child_stdin(stdin: &mut ChildStdin, message: &AcpMessage) -> Result<()> {
     let bytes = message.decode_bytes()?;
 
     if message.stream != StreamType::Stdin {
@@ -107,7 +128,7 @@ async fn write_to_child_stdin(stdin: &mut ChildStdin, payload: &[u8]) -> Result<
         return Ok(());
     }
 
-    tracing::info!(bytes = bytes.len(), "writing bytes to child stdin");
+    tracing::info!(seq = message.seq, bytes = bytes.len(), "writing bytes to child stdin");
     stdin
         .write_all(&bytes)
         .await
@@ -120,6 +141,7 @@ async fn stream_child_output<R>(
     relay: MqttRelayClient,
     mut reader: R,
     stream: StreamType,
+    seq_counter: Arc<AtomicU64>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -137,8 +159,9 @@ where
             return Ok(());
         }
 
-        tracing::info!(?stream, bytes_read, "captured child output");
-        let payload = AcpMessage::new(stream, &buffer[..bytes_read]).to_json_line()?;
+        let seq = seq_counter.fetch_add(1, Ordering::SeqCst);
+        tracing::info!(?stream, bytes_read, seq, "captured child output");
+        let payload = AcpMessage::new(seq, stream, &buffer[..bytes_read]).to_json_line()?;
         relay.publish(relay.publish_topic(), payload).await?;
     }
 }
