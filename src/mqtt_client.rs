@@ -5,24 +5,48 @@ use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, Outgoing, Qo
 use tokio::sync::mpsc;
 use url::Url;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelayRole {
-    User,
-    Work,
-}
-
 #[derive(Debug, Clone)]
-pub struct RelayTopics {
-    pub inbound: String,
-    pub outbound: String,
+pub struct RelayTopicLayout {
+    node_id: String,
 }
 
-impl RelayTopics {
+impl RelayTopicLayout {
     pub fn for_node(node_id: &str) -> Self {
         Self {
-            inbound: format!("acp/{node_id}/in"),
-            outbound: format!("acp/{node_id}/out"),
+            node_id: node_id.to_string(),
         }
+    }
+
+    pub fn control_topic(&self) -> String {
+        format!("acp/{}/control", self.node_id)
+    }
+
+    pub fn session_in_topic(&self, client_id: &str) -> String {
+        format!("acp/{}/{client_id}/in", self.node_id)
+    }
+
+    pub fn session_out_topic(&self, client_id: &str) -> String {
+        format!("acp/{}/{client_id}/out", self.node_id)
+    }
+
+    pub fn session_in_wildcard_topic(&self) -> String {
+        format!("acp/{}/+/in", self.node_id)
+    }
+
+    pub fn parse_session_in_topic(&self, topic: &str) -> Option<String> {
+        let prefix = format!("acp/{}/", self.node_id);
+        let suffix = "/in";
+
+        if !topic.starts_with(&prefix) || !topic.ends_with(suffix) {
+            return None;
+        }
+
+        let client_id = &topic[prefix.len()..topic.len() - suffix.len()];
+        if client_id.is_empty() || client_id.contains('/') {
+            return None;
+        }
+
+        Some(client_id.to_string())
     }
 }
 
@@ -34,23 +58,20 @@ pub enum MqttIncomingMessage {
 #[derive(Clone)]
 pub struct MqttRelayClient {
     client: AsyncClient,
-    pub topics: RelayTopics,
-    role: RelayRole,
+    subscriptions: Vec<String>,
 }
 
 impl MqttRelayClient {
     pub fn new(
         broker: &str,
-        node_id: &str,
-        role: RelayRole,
+        mqtt_client_id: &str,
         username: Option<&str>,
         password: Option<&str>,
+        subscriptions: Vec<String>,
     ) -> Result<(Self, EventLoop)> {
-        let topics = RelayTopics::for_node(node_id);
         let (host, port) = parse_broker(broker)?;
-        let client_id = format!("amr-{}-{node_id}", role.as_str());
 
-        let mut options = MqttOptions::new(client_id, host, port);
+        let mut options = MqttOptions::new(mqtt_client_id, host, port);
         options.set_keep_alive(Duration::from_secs(10));
         options.set_clean_session(false);
 
@@ -62,19 +83,21 @@ impl MqttRelayClient {
         Ok((
             Self {
                 client,
-                topics,
-                role,
+                subscriptions,
             },
             event_loop,
         ))
     }
 
-    pub async fn subscribe(&self) -> Result<()> {
-        let topic = self.subscribe_topic();
-        self.client
-            .subscribe(topic, QoS::AtLeastOnce)
-            .await
-            .context("failed to subscribe MQTT topic")
+    pub async fn subscribe_all(&self) -> Result<()> {
+        for topic in &self.subscriptions {
+            self.client
+                .subscribe(topic, QoS::AtLeastOnce)
+                .await
+                .with_context(|| format!("failed to subscribe MQTT topic {topic}"))?;
+        }
+
+        Ok(())
     }
 
     pub async fn publish(&self, topic: &str, payload: Vec<u8>) -> Result<()> {
@@ -89,14 +112,11 @@ impl MqttRelayClient {
         mut event_loop: EventLoop,
         tx: mpsc::Sender<MqttIncomingMessage>,
     ) -> Result<()> {
-        let subscription_topic = self.subscribe_topic().to_string();
-
         loop {
             match event_loop.poll().await {
                 Ok(Event::Incoming(Incoming::ConnAck(_))) => {
-                    tracing::info!(topic = %subscription_topic, "mqtt connected");
-                    self.client
-                        .subscribe(subscription_topic.clone(), QoS::AtLeastOnce)
+                    tracing::info!(subscriptions = ?self.subscriptions, "mqtt connected");
+                    self.subscribe_all()
                         .await
                         .context("failed to subscribe after connection")?;
                 }
@@ -132,20 +152,6 @@ impl MqttRelayClient {
             }
         }
     }
-
-    pub fn publish_topic(&self) -> &str {
-        match self.role {
-            RelayRole::User => &self.topics.inbound,
-            RelayRole::Work => &self.topics.outbound,
-        }
-    }
-
-    pub fn subscribe_topic(&self) -> &str {
-        match self.role {
-            RelayRole::User => &self.topics.outbound,
-            RelayRole::Work => &self.topics.inbound,
-        }
-    }
 }
 
 fn parse_broker(input: &str) -> Result<(String, u16)> {
@@ -164,18 +170,9 @@ fn parse_broker(input: &str) -> Result<(String, u16)> {
     Ok((host, port))
 }
 
-impl RelayRole {
-    fn as_str(self) -> &'static str {
-        match self {
-            RelayRole::User => "user",
-            RelayRole::Work => "work",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_broker, RelayTopics};
+    use super::{parse_broker, RelayTopicLayout};
 
     #[test]
     fn parses_broker_without_scheme() {
@@ -185,9 +182,31 @@ mod tests {
     }
 
     #[test]
-    fn derives_topics() {
-        let topics = RelayTopics::for_node("test-node");
-        assert_eq!(topics.inbound, "acp/test-node/in");
-        assert_eq!(topics.outbound, "acp/test-node/out");
+    fn derives_session_topics() {
+        let topics = RelayTopicLayout::for_node("test-node");
+        assert_eq!(topics.control_topic(), "acp/test-node/control");
+        assert_eq!(
+            topics.session_in_topic("client-a"),
+            "acp/test-node/client-a/in"
+        );
+        assert_eq!(
+            topics.session_out_topic("client-a"),
+            "acp/test-node/client-a/out"
+        );
+        assert_eq!(topics.session_in_wildcard_topic(), "acp/test-node/+/in");
+    }
+
+    #[test]
+    fn parses_client_id_from_session_input_topic() {
+        let topics = RelayTopicLayout::for_node("test-node");
+        assert_eq!(
+            topics.parse_session_in_topic("acp/test-node/client-a/in"),
+            Some("client-a".to_string())
+        );
+        assert_eq!(topics.parse_session_in_topic("acp/test-node/control"), None);
+        assert_eq!(
+            topics.parse_session_in_topic("acp/test-node/client-a/out"),
+            None
+        );
     }
 }

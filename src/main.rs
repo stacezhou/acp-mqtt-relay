@@ -4,7 +4,8 @@ mod mqtt_client;
 mod user_mode;
 mod work_mode;
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -13,21 +14,13 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logging();
-
     let mut cli = Cli::parse();
-    tracing::info!(?cli, "parsed cli arguments");
+    init_logging(cli.common.log.as_deref())?;
 
     let yaml_config = load_yaml_config().await?;
 
     merge_config(&mut cli.common, &yaml_config);
     validate_config(&cli.common)?;
-    tracing::info!(
-        broker = ?cli.common.broker,
-        node_id = %cli.common.node_id,
-        serve = cli.serve,
-        "effective configuration after merge"
-    );
 
     match cli.mode()? {
         Mode::User(config) => user_mode::run(config).await,
@@ -86,14 +79,38 @@ fn validate_config(common: &CommonConfig) -> Result<()> {
     Ok(())
 }
 
-fn init_logging() {
+fn init_logging(path: Option<&Path>) -> Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create log directory for path {}", path.display())
+        })?;
+    }
+
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open log file {}", path.display()))?;
+
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rumqttc=warn"));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+        .with_writer(move || {
+            file.try_clone()
+                .expect("failed to clone configured amr log file handle")
+        })
         .with_target(false)
         .compact()
         .init();
+
+    Ok(())
 }

@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use clap::{Args, Parser};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "amr", version, about = "ACP-over-MQTT relay")]
@@ -53,6 +54,9 @@ pub struct CommonConfig {
     #[arg(help = "Logical node identifier used to derive MQTT topics")]
     pub node_id: String,
 
+    #[arg(long, help = "Write amr internal logs to the given file path")]
+    pub log: Option<PathBuf>,
+
     #[arg(long, help = "MQTT broker url, for example mqtt://localhost:1883")]
     pub broker: Option<String>,
 
@@ -93,9 +97,21 @@ mod tests {
 
     #[test]
     fn parses_user_mode_with_positional_node_id() {
-        let cli = Cli::try_parse_from(["amr", "my-agent", "--broker", "localhost"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "amr",
+            "my-agent",
+            "--broker",
+            "localhost",
+            "--log",
+            "/tmp/amr.log",
+        ])
+        .unwrap();
         assert_eq!(cli.common.node_id, "my-agent");
         assert_eq!(cli.common.broker.as_deref(), Some("localhost"));
+        assert_eq!(
+            cli.common.log.as_deref(),
+            Some(std::path::Path::new("/tmp/amr.log"))
+        );
         assert!(!cli.serve);
         assert!(matches!(cli.mode().unwrap(), Mode::User(_)));
     }
