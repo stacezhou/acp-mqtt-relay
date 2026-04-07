@@ -65,52 +65,6 @@ jobs:
           if-no-files-found: error
 
 
-  build-darwin-universal:
-    needs:
-      - meta
-      - build-darwin-aarch64
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: amr-v${{ needs.meta.outputs.version }}-darwin-aarch64
-          path: incoming/aarch64
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: amr-v${{ needs.meta.outputs.version }}-darwin-x86_64
-          path: incoming/x86_64
-
-      - name: Create universal macOS binary
-        shell: bash
-        run: |
-          version="${{ needs.meta.outputs.version }}"
-          arm_package="amr-v${version}-darwin-aarch64"
-          x64_package="amr-v${version}-darwin-x86_64"
-          universal_package="amr-v${version}-darwin-universal"
-
-          mkdir -p unpack "dist/${universal_package}"
-          tar -xzf "incoming/aarch64/${arm_package}.tar.gz" -C unpack
-          tar -xzf "incoming/x86_64/${x64_package}.tar.gz" -C unpack
-
-          lipo -create \
-            -arch arm64 "unpack/${arm_package}/${BIN_NAME}" \
-            -arch x86_64 "unpack/${x64_package}/${BIN_NAME}" \
-            -output "dist/${universal_package}/${BIN_NAME}"
-
-          cp LICENSE README.md "dist/${universal_package}/"
-          chmod +x "dist/${universal_package}/${BIN_NAME}"
-
-          tar -C dist -czf "dist/${universal_package}.tar.gz" "${universal_package}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: amr-v${{ needs.meta.outputs.version }}-darwin-universal
-          path: dist/amr-v${{ needs.meta.outputs.version }}-darwin-universal.tar.gz
-          if-no-files-found: error
-
   build-linux-x86_64-musl:
     needs: meta
     runs-on: ubuntu-22.04
@@ -154,7 +108,6 @@ jobs:
     needs:
       - meta
       - build-darwin-aarch64
-      - build-darwin-universal
       - build-linux-x86_64-musl
     runs-on: ubuntu-latest
     steps:
