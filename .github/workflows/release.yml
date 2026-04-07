@@ -64,43 +64,11 @@ jobs:
           path: dist/amr-v${{ needs.meta.outputs.version }}-darwin-aarch64.tar.gz
           if-no-files-found: error
 
-  build-darwin-x86_64:
-    needs: meta
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-
-      - name: Build x86_64 macOS binary
-        run: cargo build --locked --release --target x86_64-apple-darwin
-
-      - name: Package x86_64 macOS binary
-        shell: bash
-        run: |
-          version="${{ needs.meta.outputs.version }}"
-          package="amr-v${version}-darwin-x86_64"
-
-          mkdir -p "dist/${package}"
-          cp "target/x86_64-apple-darwin/release/${BIN_NAME}" "dist/${package}/${BIN_NAME}"
-          cp LICENSE README.md "dist/${package}/"
-          chmod +x "dist/${package}/${BIN_NAME}"
-
-          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: amr-v${{ needs.meta.outputs.version }}-darwin-x86_64
-          path: dist/amr-v${{ needs.meta.outputs.version }}-darwin-x86_64.tar.gz
-          if-no-files-found: error
 
   build-darwin-universal:
     needs:
       - meta
       - build-darwin-aarch64
-      - build-darwin-x86_64
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -186,7 +154,6 @@ jobs:
     needs:
       - meta
       - build-darwin-aarch64
-      - build-darwin-x86_64
       - build-darwin-universal
       - build-linux-x86_64-musl
     runs-on: ubuntu-latest
