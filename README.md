@@ -82,6 +82,30 @@ amr --serve my-agent \
 - `--broker` 支持 `localhost` 或 `mqtt://host:port` 形式
 - `<node-id>` 是必填位置参数，用于推导 topic
 - `--serve --command` 通过系统 shell 启动子进程
+- CLI 参数优先于配置文件
+
+## Config
+
+支持的配置文件路径：
+
+- 首选：`~/.config/amr/config.yaml`
+- 兼容旧路径：`~/.config/acp-mqtt-relay/config.yaml`
+
+当前可从配置文件读取的字段：
+
+- `broker`
+- `username`
+- `password`
+
+`node_id` 不再从配置文件读取，必须通过命令行位置参数显式提供。
+
+示例：
+
+```yaml
+broker: mqtt://localhost:1883
+username: my-user
+password: my-password
+```
 
 当前 topic 规则：
 
