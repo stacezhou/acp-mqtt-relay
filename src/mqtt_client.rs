@@ -48,7 +48,7 @@ impl MqttRelayClient {
     ) -> Result<(Self, EventLoop)> {
         let topics = RelayTopics::for_node(node_id);
         let (host, port) = parse_broker(broker)?;
-        let client_id = format!("acp-mqtt-relay-{}-{node_id}", role.as_str());
+        let client_id = format!("amr-{}-{node_id}", role.as_str());
 
         let mut options = MqttOptions::new(client_id, host, port);
         options.set_keep_alive(Duration::from_secs(10));

@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Instant};
@@ -10,7 +10,7 @@ use crate::mqtt_client::{MqttIncomingMessage, MqttRelayClient, RelayRole};
 
 pub async fn run(config: UserConfig) -> Result<()> {
     let (relay, event_loop) = MqttRelayClient::new(
-        &config.common.broker,
+        config.common.broker.as_deref().unwrap(),
         &config.common.node_id,
         RelayRole::User,
         config.common.username.as_deref(),
@@ -59,7 +59,7 @@ pub async fn run(config: UserConfig) -> Result<()> {
                     Some(MqttIncomingMessage::Publish { topic, payload }) => {
                         tracing::debug!(topic = %topic, "received MQTT payload");
                         let message = AcpMessage::from_slice(&payload)?;
-                        
+
                         if message.seq < next_expected_seq {
                             tracing::warn!(seq = message.seq, "ignoring duplicate message");
                             continue;
@@ -121,7 +121,8 @@ async fn forward_stdin_to_mqtt(relay: &MqttRelayClient) -> Result<()> {
         }
 
         tracing::info!(bytes_read, seq, "captured stdin bytes");
-        let payload = AcpMessage::new(seq, StreamType::Stdin, &buffer[..bytes_read]).to_json_line()?;
+        let payload =
+            AcpMessage::new(seq, StreamType::Stdin, &buffer[..bytes_read]).to_json_line()?;
         relay.publish(relay.publish_topic(), payload).await?;
         seq += 1;
     }

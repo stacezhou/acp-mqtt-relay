@@ -1,8 +1,8 @@
-# `acp-mqtt-relay`
+# `amr`
 
 A lightweight `stdio over MQTT` relay for ACP-style agent workflows, written in Rust.
 
-`acp-mqtt-relay` 当前的 MVP 本质上是一个双端对称的 `stdio` 桥接器：
+`amr` 当前的 MVP 本质上是一个双端对称的 `stdio` 桥接器：
 
 - `user` 端读取本地 `stdin`，封装后发布到 MQTT
 - `work` 端从 MQTT 订阅消息，写入远端子进程的 `stdin`
@@ -16,15 +16,15 @@ A lightweight `stdio over MQTT` relay for ACP-style agent workflows, written in 
 当前已实现：
 
 - Rust 单二进制程序
-- `user` / `work` 两个子命令
+- 默认 user 端 + `--serve` work 端单入口 CLI
 - MQTT Broker 连接、订阅、发布和重连后重订阅
 - `stdin` / `stdout` / `stderr` 双向桥接
 - JSON 分帧消息格式，内容使用 base64 编码
+- **QoS 1 + 应用层序号的消息顺序保证和乱序处理**
 - 本地 Mosquitto 容器端到端验证
 
 当前未实现：
 
-- 消息顺序号和乱序处理
 - QoS 分级策略
 - 端到端加密
 - 多节点发现和管理
@@ -46,7 +46,7 @@ cargo build --release
 可执行文件位于：
 
 ```bash
-./target/release/acp-mqtt-relay
+./target/release/amr
 ```
 
 ## CLI
@@ -55,26 +55,23 @@ cargo build --release
 
 ```bash
 cargo run -- --help
-cargo run -- user --help
-cargo run -- work --help
+cargo run -- --serve --help
 ```
 
-`user` 模式：
+默认模式（user 端）：
 
 ```bash
-acp-mqtt-relay user \
+amr my-agent \
   --broker localhost \
-  --node-id my-agent \
   [--username USERNAME] \
   [--password PASSWORD]
 ```
 
-`work` 模式：
+serve 模式（work 端）：
 
 ```bash
-acp-mqtt-relay work \
+amr --serve my-agent \
   --broker localhost \
-  --node-id my-agent \
   --command "cat" \
   [--username USERNAME] \
   [--password PASSWORD]
@@ -83,8 +80,8 @@ acp-mqtt-relay work \
 说明：
 
 - `--broker` 支持 `localhost` 或 `mqtt://host:port` 形式
-- `--node-id` 用于推导 topic
-- `work --command` 通过系统 shell 启动子进程
+- `<node-id>` 是必填位置参数，用于推导 topic
+- `--serve --command` 通过系统 shell 启动子进程
 
 当前 topic 规则：
 
@@ -104,6 +101,7 @@ MVP 使用按消息逐条发布的 JSON 结构：
 
 ```json
 {
+  "seq": 1,
   "type": "stdin",
   "content": "SGVsbG8gQUNQIQo=",
   "encoding": "base64"
@@ -112,6 +110,7 @@ MVP 使用按消息逐条发布的 JSON 结构：
 
 其中：
 
+- `seq` 为递增的应用层消息序号，用于保证顺序和去重
 - `type` 为 `stdin`、`stdout` 或 `stderr`
 - `content` 为原始字节的 base64 编码
 - `encoding` 当前固定为 `base64`
@@ -137,20 +136,19 @@ docker run -d \
 ### 2. 启动 work 端
 
 ```bash
-./target/release/acp-mqtt-relay \
-  work \
+./target/release/amr \
+  --serve \
+  e2e-local \
   --broker localhost \
-  --node-id e2e-local \
   --command "cat"
 ```
 
 ### 3. 启动 user 端
 
 ```bash
-./target/release/acp-mqtt-relay \
-  user \
-  --broker localhost \
-  --node-id e2e-local
+./target/release/amr \
+  e2e-local \
+  --broker localhost
 ```
 
 ### 4. 验证回环
@@ -180,15 +178,14 @@ docker rm -f acp-mqtt-test
 cargo check
 cargo test
 cargo run -- --help
-cargo run -- user --help
-cargo run -- work --help
+cargo run -- --serve --help
 ```
 
 另外已经用本地 Mosquitto 容器完成过一轮真实端到端验证：
 
-- `work --command cat`
-- `user` 发送 `Hello ACP!\n`
-- `user` 成功收到原样回显
+- `amr --serve e2e-local --command cat`
+- `amr e2e-local` 发送 `Hello ACP!\n`
+- user 端成功收到原样回显
 
 ## Architecture
 
@@ -205,7 +202,6 @@ local stdin/stdout
 
 ## Roadmap
 
-- 增加消息序号和顺序保证
 - 区分控制流和大流量输出的 QoS 策略
 - 增加 TLS / MQTT 鉴权配置
 - 增加端到端加密

@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::mpsc;
@@ -12,7 +12,7 @@ use crate::mqtt_client::{MqttIncomingMessage, MqttRelayClient, RelayRole};
 
 pub async fn run(config: WorkConfig) -> Result<()> {
     let (relay, event_loop) = MqttRelayClient::new(
-        &config.common.broker,
+        config.common.broker.as_deref().unwrap(),
         &config.common.node_id,
         RelayRole::Work,
         config.common.username.as_deref(),
@@ -128,7 +128,11 @@ async fn write_message_to_child_stdin(stdin: &mut ChildStdin, message: &AcpMessa
         return Ok(());
     }
 
-    tracing::info!(seq = message.seq, bytes = bytes.len(), "writing bytes to child stdin");
+    tracing::info!(
+        seq = message.seq,
+        bytes = bytes.len(),
+        "writing bytes to child stdin"
+    );
     stdin
         .write_all(&bytes)
         .await
