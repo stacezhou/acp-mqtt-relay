@@ -26,3 +26,6 @@ docker
 # Added by cargo
 
 /target
+/target-linux-x86_64
+/artifacts
+/.omx
